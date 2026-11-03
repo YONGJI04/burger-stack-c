@@ -1,0 +1,11 @@
+/build/
+/burger
+/burger.exe
+/ranking.txt
+/logs/*
+!/logs/.gitkeep
+__pycache__/
+*.o
+*.d
+*.ppt
+*.pptx
