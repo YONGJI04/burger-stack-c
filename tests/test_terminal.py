@@ -56,7 +56,11 @@ class Session:
     def expect(self, text, timeout=3):
         until = time.monotonic() + timeout
         while time.monotonic() < until:
-            output = self.read()
+            self.read()
+            # A PTY read may end halfway through a frame. Wait for the final
+            # reset/erase emitted by terminal_present before inspecting it.
+            complete = self.buffer.rfind(b'\x1b[0m\x1b[J')
+            output = ANSI.sub(b'', self.buffer[:complete]).decode('utf-8', errors='replace') if complete >= 0 else ''
             if text in output:
                 return output
             if self.process.poll() is not None:
