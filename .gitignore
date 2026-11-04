@@ -1,6 +1,7 @@
 /build/
 /burger
 /burger.exe
+/test_windows_console.exe
 /ranking.txt
 /logs/*
 !/logs/.gitkeep

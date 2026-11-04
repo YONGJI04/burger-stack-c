@@ -126,9 +126,16 @@ static void add_customer(Game *game, double now)
         customer.length = BURGER_MAX_LAYERS;
     customer.recipe[0] = ING_BOTTOM;
     customer.recipe[1] = ING_PATTY;
-    for (size_t i = 2; i + 1 < customer.length; ++i)
-        customer.recipe[i] = (Ingredient)(ING_PATTY + random_next(game) % 5);
+    for (size_t i = 2; i + 1 < customer.length; ++i) {
+        uint32_t choice = random_next(game);
+        customer.recipe[i] = game->stage <= 2
+                           ? (Ingredient)(ING_CHEESE + choice % 4)
+                           : (Ingredient)(ING_PATTY + choice % 5);
+    }
     customer.recipe[customer.length - 1] = ING_TOP;
+    /* A familiar first burger gives new players a predictable introduction. */
+    if (customer.id == 1)
+        customer.recipe[2] = ING_CHEESE;
     queue_enqueue(&game->queue, customer);
 }
 
@@ -136,6 +143,12 @@ static void event_set(Game *game, GameEvent event, double now)
 {
     game->event = event;
     game->event_until = now + 2.5;
+    if (event == EVENT_CORRECT || event == EVENT_WRONG || event == EVENT_TIMEOUT) {
+        game->feedback = event;
+        game->feedback_until = now + 2.5;
+    }
+    if (event == EVENT_ADDED)
+        game->last_layer_at = now;
 }
 
 void game_init(Game *game, uint32_t seed, double now, double duration)
@@ -149,6 +162,8 @@ void game_init(Game *game, uint32_t seed, double now, double duration)
     game->last_tick = now;
     game->ends_at = now + duration;
     game->next_arrival = now + game_arrival_interval(game->stage);
+    game->submitted_at = now - 10;
+    game->last_layer_at = now - 10;
     event_set(game, EVENT_READY, now);
     add_customer(game, now);
 }
@@ -234,7 +249,10 @@ void game_input(Game *game, int key, double now)
             event_set(game, EVENT_NO_CUSTOMER, now);
             return;
         }
-        if (stack_matches(&game->burger, customer)) {
+        game->submitted = game->burger;
+        game->submitted_at = now;
+        game->submitted_correct = stack_matches(&game->burger, customer);
+        if (game->submitted_correct) {
             ++game->combo;
             if (game->combo > game->best_combo)
                 game->best_combo = game->combo;
@@ -270,6 +288,24 @@ double game_time_left(const Game *game, double now)
 {
     double remaining = game->ends_at - now;
     return remaining > 0 ? remaining : 0;
+}
+
+void game_shift_clocks(Game *game, double seconds)
+{
+    if (!isfinite(seconds) || seconds <= 0) return;
+    game->started_at += seconds;
+    game->ends_at += seconds;
+    game->last_tick += seconds;
+    game->next_arrival += seconds;
+    game->event_until += seconds;
+    game->feedback_until += seconds;
+    game->last_layer_at += seconds;
+    game->submitted_at += seconds;
+    for (size_t i = 0; i < game->queue.count; ++i) {
+        Customer *customer = &game->queue.items[(game->queue.front + i) % BURGER_QUEUE_CAPACITY];
+        customer->arrived_at += seconds;
+        customer->deadline += seconds;
+    }
 }
 
 const char *ingredient_name(Ingredient ingredient)

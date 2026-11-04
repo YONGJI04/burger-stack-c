@@ -48,6 +48,7 @@ typedef enum { END_NONE, END_TIME, END_LIVES, END_QUIT } EndReason;
 
 typedef struct {
     BurgerStack burger;
+    BurgerStack submitted;
     CustomerQueue queue;
     uint32_t random_state;
     unsigned next_id;
@@ -65,6 +66,11 @@ typedef struct {
     double next_arrival;
     GameEvent event;
     double event_until;
+    GameEvent feedback;
+    double feedback_until;
+    double last_layer_at;
+    double submitted_at;
+    bool submitted_correct;
     EndReason ended;
 } Game;
 
@@ -85,6 +91,7 @@ void game_init(Game *game, uint32_t seed, double now, double duration);
 void game_tick(Game *game, double now);
 void game_input(Game *game, int key, double now);
 double game_time_left(const Game *game, double now);
+void game_shift_clocks(Game *game, double seconds);
 const char *ingredient_name(Ingredient ingredient);
 const char *ingredient_short_name(Ingredient ingredient);
 bool game_invariant(const Game *game);

@@ -2,7 +2,9 @@
 
 주문서 순서대로 재료를 쌓아 손님에게 서빙하는 **C11 콘솔 게임**입니다. 자료구조 기말과제 제안 PPT의 스택·원형 큐·구조체 배열 정렬·파일 입출력을 구현했습니다. 게임 실행에는 외부 라이브러리가 필요하지 않습니다.
 
-![실제 게임 화면](docs/gameplay.png)
+![게임에서 직접 출력한 데모 화면 · 96×32](docs/gameplay.png)
+
+둥근 참깨 빵과 구운 패티, 녹은 치즈, 채소를 색이 채워진 픽셀 그림으로 표현합니다. 재료를 넣으면 짧게 내려앉고, 성공한 햄버거는 잠시 접시에 남아 서빙을 알립니다. 다음 주문을 바로 시작해도 입력할 수 있습니다.
 
 ## 바로 실행
 
@@ -13,7 +15,7 @@
 소스에서 빌드하려면 GCC가 PATH에 있는 환경(MSYS2 MinGW64/UCRT64 등)에서 `build.bat`을 실행한 다음 `play.bat`을 실행합니다. PowerShell에서 직접 빌드할 수도 있습니다.
 
 ```powershell
-gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude src/main.c src/game.c src/ranking.c src/terminal.c src/ui.c -o burger.exe -lm
+gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude src/main.c src/game.c src/ranking.c src/terminal.c src/art.c src/ui.c -o burger.exe -lm
 .\burger.exe
 ```
 
@@ -30,7 +32,14 @@ make
 
 macOS에서 GCC 명령이 없다면 `make CC=clang`을 사용합니다. VS Code에서는 **터미널 → 새 터미널**에서 실행하세요. 출력 패널·디버그 콘솔에는 실시간 키 입력이 전달되지 않습니다. `Ctrl+Shift+B`로 빌드할 수 있습니다.
 
-화면 크기는 **80열 × 24행 이상**입니다. 창이 작아지면 안내를 표시하고 게임 및 손님 타이머를 함께 멈춥니다. 창을 다시 키우면 이어집니다.
+권장 화면은 **96열 × 32행 이상**입니다. 창 크기에 따라 넓은 화면과 **80×24 작은 화면**을 자동으로 전환합니다. 최소 크기보다 작아지면 안내를 표시하고 게임 및 손님 타이머를 함께 멈춥니다. 창을 다시 키우면 이어집니다. UTF-8과 트루컬러를 지원하는 터미널에서 색과 그림이 가장 잘 보입니다. `--no-color`에서는 재료별 문자 패턴을 사용합니다.
+
+<details>
+<summary>작은 화면 예시 (80×24)</summary>
+
+![작은 콘솔 화면](docs/gameplay-compact.png)
+
+</details>
 
 ## 조작법
 
@@ -45,12 +54,15 @@ macOS에서 GCC 명령이 없다면 `make CC=clang`을 사용합니다. VS Code�
 | `7` | 위 빵 |
 | `U` | 맨 위 재료 하나 빼기 · pop |
 | `S` / `Space` | 맨 앞 손님에게 제출 |
+| `P` | 일시정지·계속하기 (전체 시간과 손님 시간 모두 정지) |
 | `Q` / `Esc` | 영업 마감 → 점수 저장 화면 |
 | `Ctrl+C` | 프로그램 종료 |
 
 게임에서는 **Enter 없이** 반영됩니다. 대소문자 모두 가능하고, `Z`와 Backspace도 되돌리기로 사용할 수 있습니다. 메뉴는 숫자키 또는 방향키 + Enter로 선택합니다.
 
 주문서의 **위에서 아래 순서**가 햄버거를 **아래부터 쌓는 순서**입니다. 예를 들어 아래 빵 → 패티 → 치즈 → 위 빵은 `1 2 3 7 S`로 제출합니다. 오른쪽 햄버거 그림은 실제 쌓인 모습이므로 가장 최근에 넣은 재료가 맨 위에 있습니다.
+
+첫 주문은 항상 위 예시의 **치즈버거**입니다. 주문서의 `>`는 다음 재료, `+`는 맞는 재료, `!`는 다른 재료를 나타냅니다. 틀린 부분부터 고치는 데 필요한 U 횟수와 제출할 시점도 화면 아래에서 알려줍니다. 넓은 화면에는 손님별 인내심 막대와 주문 완성도 막대를 표시합니다.
 
 ## 게임 규칙
 
@@ -73,7 +85,7 @@ macOS에서 GCC 명령이 없다면 `make CC=clang`을 사용합니다. VS Code�
 | 7 | 7~8 | 17초 | 5 | 3.8초 |
 | 8 | 8~9 | 14.5초 | 5 | 3.1초 |
 
-대기열이 비면 다음 손님이 바로 옵니다. 주문은 아래 빵·패티로 시작하고 위 빵으로 끝납니다. 중간 재료는 중복될 수 있습니다.
+대기열이 비면 다음 손님이 바로 옵니다. 주문은 아래 빵·패티로 시작하고 위 빵으로 끝납니다. 1~2단계의 중간 재료는 치즈·채소이며, 3단계부터 추가 패티도 나옵니다. 중간 재료는 중복될 수 있습니다.
 
 점수는 `100 + 재료 수 × 10 + floor(손님 남은 초 / 2) × 5 + (min(연속 성공, 10) - 1) × 20`입니다. 실패하면 콤보가 초기화됩니다.
 
@@ -84,7 +96,8 @@ macOS에서 GCC 명령이 없다면 `make CC=clang`을 사용합니다. VS Code�
 | `include/game.h`, `src/game.c` | 게임 상태·시간·주문 생성·채점 | 배열 스택 `push/pop`, 원형 큐 `enqueue/dequeue` |
 | `src/ranking.c` | 전체 기록 읽기·정렬·추가 저장 | 구조체 동적 배열, `qsort`, 파일 입출력 |
 | `src/terminal.c` | Enter 없는 키 입력·단조 시계·종료 복구 | Linux/macOS `termios/select`, Windows `_getwch` |
-| `src/ui.c` | 한글 메뉴·손님 표정·햄버거 그림·랭킹 | 80×24 텍스트 화면, ANSI 색상 |
+| `src/art.c` | 빵·패티·채소의 모양, 두께 자동 조절 | C 배열로 픽셀 그림 생성, 반 칸 블록 `▀` |
+| `src/ui.c` | 한글 메뉴·표정·주문 안내·랭킹 | 96×32 / 80×24 반응형 콘솔, 트루컬러 |
 | `src/main.c` | 메뉴·플레이·이름 입력을 연결 | 게임의 전체 실행 흐름 |
 | `tests/` | 자료구조·시간·파일·실제 터미널 검증 | 경계값과 랜덤 게임 테스트 |
 
@@ -109,6 +122,8 @@ macOS에서 GCC 명령이 없다면 `make CC=clang`을 사용합니다. VS Code�
 
 ## 검증과 10시간 루프
 
+버전별 실제 검증 결과는 [검증 기록](docs/validation.md)에 정리했습니다.
+
 테스트 스크립트만 Python 3를 사용합니다. 게임 자체는 전부 C입니다.
 
 ```sh
@@ -116,6 +131,15 @@ make test        # C 단위·랜덤 테스트 + 실제 터미널 통합 테스�
 make sanitize    # AddressSanitizer + UndefinedBehaviorSanitizer
 make soak        # 10시간 자동 검증 (Linux/WSL/macOS)
 ```
+
+Windows에서도 가상 콘솔에 실제 키를 보내 서빙, 일시정지, 한글 이름 입력, 랭킹 저장과 종료를 검사할 수 있습니다. Windows 10 1809 이상과 GCC가 필요합니다.
+
+```powershell
+gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 tests/test_windows_console.c -o test_windows_console.exe
+.\test_windows_console.exe .\burger.exe
+```
+
+스크린샷은 게임의 `--demo` 출력을 렌더링한 것입니다. Pillow가 있는 개발 환경에서 `python3 scripts/capture_preview.py`로 다시 만들 수 있습니다. 게임 실행에는 Python이나 Pillow가 필요하지 않습니다.
 
 루프는 기본 60초 간격으로 빌드를 확인하고, 매회 새로운 시드로 10,000개 게임을 시뮬레이션합니다. 처음 실행하거나 소스가 바뀌면 메모리 검사와 터미널 통합 테스트도 실행합니다. 실패하면 즉시 중단하여 실패 명령·시드를 남깁니다. **자동 코드 수정은 하지 않는 검증 루프**입니다.
 

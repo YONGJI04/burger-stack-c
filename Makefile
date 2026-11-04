@@ -2,9 +2,9 @@ CC = gcc
 CPPFLAGS = -Iinclude
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror -O2
 LDLIBS = -lm
-SOURCES = src/main.c src/game.c src/ranking.c src/terminal.c src/ui.c
+SOURCES = src/main.c src/game.c src/ranking.c src/terminal.c src/art.c src/ui.c
 HEADERS = $(wildcard include/*.h)
-CORE = src/game.c src/ranking.c src/terminal.c
+CORE = src/game.c src/ranking.c src/terminal.c src/art.c
 
 .PHONY: all run test sanitize clean demo windows soak
 all: burger

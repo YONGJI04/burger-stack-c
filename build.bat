@@ -6,7 +6,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude src/main.c src/game.c src/ranking.c src/terminal.c src/ui.c -o burger.exe -lm
+gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude src/main.c src/game.c src/ranking.c src/terminal.c src/art.c src/ui.c -o burger.exe -lm
 if errorlevel 1 (
   echo Build failed.
   pause

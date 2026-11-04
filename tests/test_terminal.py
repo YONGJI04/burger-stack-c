@@ -15,20 +15,25 @@ import tempfile
 import termios
 import time
 import unittest
+import unicodedata
 
 BINARY = str(Path(sys.argv.pop(1) if len(sys.argv) > 1 else './burger').resolve())
 ANSI = re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]')
 
 
 class Session:
-    def __init__(self, *args):
+    def __init__(self, *args, size=(80, 24), color=False):
         self.master, self.slave = pty.openpty()
-        self.resize(80, 24)
+        self.resize(*size)
         self.original = termios.tcgetattr(self.slave)
+        env = dict(os.environ)
+        if color:
+            env.pop('NO_COLOR', None)
         self.process = subprocess.Popen(
-            [BINARY, '--no-color', '--seed', '42', *args],
+            [BINARY, *([] if color else ['--no-color']), '--seed', '42', *args],
             stdin=self.slave, stdout=self.slave, stderr=self.slave,
             start_new_session=True,
+            env=env,
         )
         self.buffer = b''
 
@@ -91,8 +96,8 @@ class TerminalTests(unittest.TestCase):
             session.close()
         self.directory.cleanup()
 
-    def open(self, *args):
-        session = Session('--ranking', str(self.ranking), *args)
+    def open(self, *args, **kwargs):
+        session = Session('--ranking', str(self.ranking), *args, **kwargs)
         self.sessions.append(session)
         session.expect('H A M B U R G E R')
         return session
@@ -115,8 +120,8 @@ class TerminalTests(unittest.TestCase):
         session.send('1')
         output = session.expect('주문 #001')
         digits = re.findall(r'\d+\. \[([1-7])\]', output)
-        self.assertEqual(digits[:4], ['1', '2', '4', '7'])
-        session.send('16u247s')
+        self.assertEqual(digits[:4], ['1', '2', '3', '7'])
+        session.send('16u237s')
         session.expect('서빙 성공!')
         session.clear()
         session.send('q')
@@ -179,6 +184,53 @@ class TerminalTests(unittest.TestCase):
         session.expect('H A M B U R G E R')
         session.send('2')
         session.expect('아직 기록이 없어요.')
+
+    def test_pause_preserves_round_and_ingredients(self):
+        session = self.open('--duration', '2')
+        session.send('1')
+        session.expect('ORDER QUEUE')
+        session.send('12p')
+        session.expect('PAUSED')
+        until = time.monotonic() + 2.2
+        while time.monotonic() < until:
+            session.read()
+        session.clear()
+        session.send('p')
+        output = session.expect('2 LAYERS')
+        self.assertNotIn('SHIFT COMPLETE', output)
+        session.expect('영업시간이 끝났습니다.', timeout=3)
+
+    def test_feedback_survives_starting_the_next_burger(self):
+        session = self.open()
+        session.send('1')
+        session.expect('ORDER QUEUE')
+        session.send('1237s')
+        session.expect('ORDER UP!')
+        session.clear()
+        session.send('1')
+        session.expect('1 LAYERS')
+        session.expect('서빙 성공!')
+
+    def test_rich_layout_resize_and_full_stack(self):
+        session = self.open(size=(96, 32), color=True)
+        session.send('1')
+        session.expect('ORDER QUEUE')
+        session.send('123456712347')
+        session.expect('12 LAYERS')
+        self.assertIn(b'\x1b[48;2;', session.buffer)
+        self.assertIn('▀'.encode(), session.buffer)
+        session.clear()
+        session.resize(80, 24)
+        session.expect('12 LAYERS')
+        # Entire frames must fit the terminal; CJK characters occupy two columns.
+        frame = session.buffer.split(b'\x1b[H')[-1]
+        text = ANSI.sub(b'', frame).decode('utf-8', errors='replace')
+        lines = text.replace('\r', '').split('\n')
+        for line in lines:
+            columns = sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in line)
+            self.assertLessEqual(columns, 80, line)
+        session.send('u')
+        session.expect('11 LAYERS')
 
 
 if __name__ == '__main__':

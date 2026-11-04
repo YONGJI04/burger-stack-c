@@ -5,8 +5,8 @@
       "label": "Build burger (C11)",
       "type": "process",
       "command": "gcc",
-      "args": ["-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-g", "-Iinclude", "src/main.c", "src/game.c", "src/ranking.c", "src/terminal.c", "src/ui.c", "-o", "burger", "-lm"],
-      "windows": {"args": ["-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-g", "-Iinclude", "src/main.c", "src/game.c", "src/ranking.c", "src/terminal.c", "src/ui.c", "-o", "burger.exe", "-lm"]},
+      "args": ["-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-g", "-Iinclude", "src/main.c", "src/game.c", "src/ranking.c", "src/terminal.c", "src/art.c", "src/ui.c", "-o", "burger", "-lm"],
+      "windows": {"args": ["-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-g", "-Iinclude", "src/main.c", "src/game.c", "src/ranking.c", "src/terminal.c", "src/art.c", "src/ui.c", "-o", "burger.exe", "-lm"]},
       "options": {"cwd": "${workspaceFolder}"},
       "group": {"kind": "build", "isDefault": true},
       "problemMatcher": ["$gcc"]

@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "game.h"
+#include "art.h"
 #include "ranking.h"
 #include "terminal.h"
 
@@ -183,6 +184,55 @@ static void test_time(void)
     CHECK(game.ended == END_QUIT);
 }
 
+static void test_pause_and_feedback(void)
+{
+    Game game;
+    game_init(&game, 42, 100, 120);
+    const Customer *customer = queue_at(&game.queue, 0);
+    CHECK(customer->recipe[2] == ING_CHEESE);
+    double now = 100;
+    solve(&game, &now);
+    CHECK(game.submitted_correct && game.submitted.top == 4);
+    CHECK(game.feedback == EVENT_CORRECT);
+    double remaining = game_time_left(&game, now);
+    double customer_remaining = queue_at(&game.queue, 0)->deadline - now;
+    double feedback_remaining = game.feedback_until - now;
+    game_input(&game, '1', now);
+    CHECK(game.feedback == EVENT_CORRECT && game.event == EVENT_ADDED);
+    CHECK(game.submitted.top == 4 && game.burger.top == 1);
+    game_shift_clocks(&game, 60);
+    now += 60;
+    game_tick(&game, now);
+    CHECK(fabs(game_time_left(&game, now) - remaining) < 0.000001);
+    CHECK(fabs(queue_at(&game.queue, 0)->deadline - now - customer_remaining) < 0.000001);
+    CHECK(fabs(game.feedback_until - now - feedback_remaining) < 0.000001);
+    CHECK(game.lives == 3 && game.burger.top == 1);
+    game_shift_clocks(&game, -5);
+    game_shift_clocks(&game, NAN);
+    CHECK(game_invariant(&game));
+}
+
+static void test_burger_art(void)
+{
+    /* Exercise every ingredient, full stacks and both layout sizes under ASan. */
+    for (int item = ING_BOTTOM; item <= ING_TOP; ++item) {
+        BurgerStack burger;
+        stack_init(&burger);
+        for (size_t count = 0; count <= BURGER_MAX_LAYERS; ++count) {
+            for (int rows = 24; rows <= 40; rows += 2) {
+                BurgerArt art;
+                art_burger(&art, &burger, rows, 2);
+                CHECK(art.height == rows && art.top_row >= 0 && art.top_row < rows);
+                for (int y = 0; y < rows; ++y)
+                    for (int x = 0; x < ART_WIDTH; ++x)
+                        CHECK(art.pixels[y][x] < INK_COUNT);
+                CHECK(art.pixels[rows - 2][0] == INK_PLATE);
+            }
+            if (count < BURGER_MAX_LAYERS) CHECK(stack_push(&burger, (Ingredient)item));
+        }
+    }
+}
+
 static void test_ranking(void)
 {
     char path[128];
@@ -276,6 +326,8 @@ int main(int argc, char **argv)
     test_queue();
     test_gameplay();
     test_time();
+    test_pause_and_feedback();
+    test_burger_art();
     test_ranking();
     fuzz_games(seed, rounds);
     printf("PASS: %u checks; %u simulated games; seed=%u\n", checks, rounds, seed);

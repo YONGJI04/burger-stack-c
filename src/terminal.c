@@ -26,6 +26,7 @@ static struct termios saved_termios;
 static bool opened;
 static bool use_color;
 static volatile sig_atomic_t interrupted;
+static char previous_frame[262144];
 
 static void on_signal(int signal_number)
 {
@@ -58,6 +59,7 @@ bool terminal_open(bool color)
         return false;
 #endif
     interrupted = 0;
+    previous_frame[0] = '\0';
     opened = true;
     use_color = color;
     signal(SIGINT, on_signal);
@@ -195,9 +197,22 @@ void terminal_size(int *columns, int *rows)
 
 bool terminal_interrupted(void) { return interrupted != 0; }
 bool terminal_color(void) { return use_color; }
+void terminal_set_color(bool color) { use_color = color; previous_frame[0] = '\0'; }
 
 void terminal_present(const char *frame)
 {
+    static int previous_columns, previous_rows;
+    int columns, rows;
+    terminal_size(&columns, &rows);
+    bool resized = columns != previous_columns || rows != previous_rows;
+    previous_columns = columns;
+    previous_rows = rows;
+    /* Avoid repainting unchanged menus/frames, especially over SSH. */
+    if (opened && !resized && strcmp(previous_frame, frame) == 0) return;
+    size_t length = strlen(frame);
+    if (length < sizeof(previous_frame)) memcpy(previous_frame, frame, length + 1);
+    else previous_frame[0] = '\0';
+    if (opened && resized) fputs("\033[2J", stdout);
     fputs("\033[H", stdout);
     fputs(frame, stdout);
     fputs("\033[0m\033[J", stdout);

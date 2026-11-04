@@ -18,6 +18,7 @@ double terminal_now(void);
 void terminal_size(int *columns, int *rows);
 bool terminal_interrupted(void);
 bool terminal_color(void);
+void terminal_set_color(bool color);
 void terminal_present(const char *frame);
 void terminal_flush_input(void);
 size_t utf8_decode(const char *text, uint32_t *codepoint);

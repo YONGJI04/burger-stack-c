@@ -31,7 +31,7 @@ static void usage(const char *program)
            "  --demo               Print an example game screen and exit\n"
            "  --help               Show this help\n"
            "  --version            Show version\n\n"
-           "Keys: 1..7 ingredients, U undo, S/Space submit, Q/Esc end round.\n"
+           "Keys: 1..7 ingredients, U undo, S/Space submit, P pause, Q/Esc end round.\n"
            "Play in a UTF-8 terminal at least 80 columns by 24 rows.\n", program);
 }
 
@@ -55,7 +55,7 @@ static int parse_options(int argc, char **argv, Options *options)
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             usage(argv[0]); return 1;
         }
-        if (strcmp(arg, "--version") == 0) { puts("BURGER STACK 1.0.0"); return 1; }
+        if (strcmp(arg, "--version") == 0) { puts("BURGER STACK 1.1.0"); return 1; }
         if (strcmp(arg, "--no-color") == 0) { options->color = false; continue; }
         if (strcmp(arg, "--demo") == 0) { options->demo = true; continue; }
         if ((strcmp(arg, "--duration") == 0 || strcmp(arg, "--seed") == 0
@@ -81,21 +81,6 @@ static int parse_options(int argc, char **argv, Options *options)
     return 0;
 }
 
-/* A too-small terminal pauses every clock, including waiting customers. */
-static void shift_clocks(Game *game, double seconds)
-{
-    game->started_at += seconds;
-    game->ends_at += seconds;
-    game->last_tick += seconds;
-    game->next_arrival += seconds;
-    game->event_until += seconds;
-    for (size_t i = 0; i < game->queue.count; ++i) {
-        Customer *customer = &game->queue.items[(game->queue.front + i) % BURGER_QUEUE_CAPACITY];
-        customer->arrived_at += seconds;
-        customer->deadline += seconds;
-    }
-}
-
 static bool wait_for_size(Game *game)
 {
     double before = terminal_now();
@@ -106,7 +91,7 @@ static bool wait_for_size(Game *game)
         int key = terminal_key(100);
         if (key == KEY_EOF || key == 27 || key == 'q' || key == 'Q') return false;
     }
-    if (game != NULL) shift_clocks(game, terminal_now() - before);
+    if (game != NULL) game_shift_clocks(game, terminal_now() - before);
     return !terminal_interrupted();
 }
 
@@ -191,6 +176,21 @@ static void save_result(const Options *options, const Game *game)
     }
 }
 
+static void pause_game(Game *game)
+{
+    double started = terminal_now();
+    game_tick(game, started);
+    if (game->ended != END_NONE) return;
+    while (!terminal_interrupted()) {
+        if (!wait_for_size(NULL)) { game->ended = END_QUIT; break; }
+        ui_pause(game);
+        int key = terminal_key(100);
+        if (key == KEY_EOF || key == 'q' || key == 'Q') { game->ended = END_QUIT; break; }
+        if (key == 'p' || key == 'P' || key == '\r' || key == '\n' || key == 27) break;
+    }
+    game_shift_clocks(game, terminal_now() - started);
+}
+
 static void play(const Options *options)
 {
     Game game;
@@ -205,7 +205,8 @@ static void play(const Options *options)
         if (game.ended != END_NONE) break;
         int key = terminal_key(50);
         if (key == KEY_EOF) return;
-        if (key != KEY_NONE) game_input(&game, key, terminal_now());
+        if (key == 'p' || key == 'P') pause_game(&game);
+        else if (key != KEY_NONE) game_input(&game, key, terminal_now());
     }
     if (!terminal_interrupted()) save_result(options, &game);
 }
@@ -220,10 +221,22 @@ int main(int argc, char **argv)
     if (options.demo) {
         Game game;
         game_init(&game, 42, 0, BURGER_DEFAULT_SECONDS);
-        game_tick(&game, 8);
-        const Customer *customer = queue_at(&game.queue, 0);
+        game.served = 12;
+        game.stage = game_stage(game.served);
+        game.score = 2820;
+        game.combo = game.best_combo = 4;
+        Customer *customer = &game.queue.items[game.queue.front];
+        Ingredient sample[] = {ING_BOTTOM, ING_PATTY, ING_CHEESE, ING_LETTUCE,
+                               ING_TOMATO, ING_PICKLE, ING_TOP};
+        memcpy(customer->recipe, sample, sizeof(sample));
+        customer->length = sizeof(sample) / sizeof(sample[0]);
+        customer->stage = game.stage;
+        customer->deadline = game_patience(game.stage);
+        game_tick(&game, 16);
+        customer = &game.queue.items[game.queue.front];
         for (size_t i = 0; i < customer->length; ++i) stack_push(&game.burger, customer->recipe[i]);
-        ui_game(&game, 8);
+        terminal_set_color(options.color);
+        ui_game(&game, 16);
         puts("");
         return EXIT_SUCCESS;
     }

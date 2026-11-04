@@ -30,13 +30,28 @@ jobs:
           mkdir -p build/windows
           cp build/burger.exe play.bat README.md build/windows/
           cp -r docs build/windows/
+          x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -static tests/test_windows_console.c -o build/windows/test_windows_console.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: burger-windows
           path: build/windows/
+          if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: burger-linux
           path: burger
+          if-no-files-found: error
           retention-days: 14
+
+  windows-console:
+    needs: linux
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: burger-windows
+          path: windows
+      - name: Play, pause and save a Korean name in a native Windows console
+        run: .\windows\test_windows_console.exe .\windows\burger.exe

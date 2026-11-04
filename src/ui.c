@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "art.h"
 #include "terminal.h"
 
 #include <math.h>
@@ -6,265 +7,385 @@
 #include <stdio.h>
 #include <string.h>
 
-#define WIDTH 80
-#define HEIGHT 24
-#define FRAME_BYTES 32768
+#define MAX_WIDTH 96
+#define MAX_HEIGHT 32
+#define FRAME_BYTES 262144
 
-enum Color { WHITE, MUTED, GOLD, RED, GREEN, CYAN, BROWN, YELLOW };
-typedef struct { char text[5]; unsigned char color; bool continuation; } Cell;
-static Cell canvas[HEIGHT][WIDTH];
+typedef struct {
+    char text[5];
+    unsigned char foreground, background;
+    bool continuation;
+} Cell;
+static Cell canvas[MAX_HEIGHT][MAX_WIDTH];
+static int width = 80, height = 24;
+static bool roomy;
 
-static const char *color_code(int color)
+static void cell_set(int x, int y, const char *text, Ink foreground, Ink background)
 {
-    static const char *codes[] = {
-        "\033[97m", "\033[90m", "\033[1;33m", "\033[91m", "\033[92m",
-        "\033[96m", "\033[33m", "\033[93m"
-    };
-    return codes[color];
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    Cell *cell = &canvas[y][x];
+    if (cell->continuation && x > 0) {
+        strcpy(canvas[y][x - 1].text, " ");
+        canvas[y][x - 1].continuation = false;
+    }
+    if (x + 1 < width && canvas[y][x + 1].continuation) {
+        strcpy(canvas[y][x + 1].text, " ");
+        canvas[y][x + 1].continuation = false;
+    }
+    snprintf(cell->text, sizeof(cell->text), "%s", text);
+    cell->foreground = (unsigned char)foreground;
+    cell->background = (unsigned char)background;
+    cell->continuation = false;
+}
+
+static void fill(int x, int y, int columns, int rows, Ink background)
+{
+    for (int row = y; row < y + rows; ++row)
+        for (int col = x; col < x + columns; ++col)
+            cell_set(col, row, " ", INK_TEXT, background);
 }
 
 static void blank(void)
 {
+    int columns, rows;
+    terminal_size(&columns, &rows);
+    roomy = columns >= 96 && rows >= 32;
+    width = roomy ? 96 : 80;
+    height = roomy ? 32 : 24;
     memset(canvas, 0, sizeof(canvas));
-    for (int y = 0; y < HEIGHT; ++y)
-        for (int x = 0; x < WIDTH; ++x)
-            strcpy(canvas[y][x].text, " ");
+    fill(0, 0, width, height, INK_BACK);
 }
 
-static void text_at(int x, int y, int color, const char *format, ...)
+static void text_limit(int x, int y, Ink ink, int limit, const char *text)
 {
-    if (y < 0 || y >= HEIGHT) return;
+    if (y < 0 || y >= height || x < 0) return;
+    int end = x + limit < width - 1 ? x + limit : width - 1;
+    while (*text && x < end) {
+        uint32_t cp;
+        size_t bytes = utf8_decode(text, &cp);
+        int columns = utf8_width(cp);
+        if (columns == 0) { text += bytes; continue; }
+        if (x + columns > end) break;
+        char glyph[5] = {0};
+        memcpy(glyph, text, bytes);
+        cell_set(x, y, glyph, ink, (Ink)canvas[y][x].background);
+        if (columns == 2) {
+            canvas[y][x + 1].continuation = true;
+            canvas[y][x + 1].text[0] = '\0';
+        }
+        x += columns;
+        text += bytes;
+    }
+}
+
+static void text_at(int x, int y, Ink ink, const char *format, ...)
+{
     char buffer[512];
     va_list args;
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
-    const char *p = buffer;
-    while (*p && x < WIDTH) {
-        uint32_t cp;
-        size_t bytes = utf8_decode(p, &cp);
-        int width = utf8_width(cp);
-        if (width == 0) { p += bytes; continue; }
-        if (x < 0) { x += width; p += bytes; continue; }
-        if (x + width > WIDTH) break;
-        Cell *cell = &canvas[y][x];
-        memcpy(cell->text, p, bytes);
-        cell->text[bytes] = '\0';
-        cell->color = (unsigned char)color;
-        cell->continuation = false;
-        if (width == 2) {
-            canvas[y][x + 1].continuation = true;
-            canvas[y][x + 1].text[0] = '\0';
-        }
-        x += width;
-        p += bytes;
-    }
+    text_limit(x, y, ink, width, buffer);
 }
 
 static void rule(int y)
 {
-    for (int x = 1; x < WIDTH - 1; ++x) text_at(x, y, MUTED, "-");
-    text_at(0, y, MUTED, "+");
-    text_at(WIDTH - 1, y, MUTED, "+");
-}
-
-static void ranking_name_at(int x, int y, int color, const char *name)
-{
-    char clipped[RANKING_NAME_BYTES];
-    size_t used = 0;
-    int columns = 0;
-    while (*name) {
-        uint32_t cp;
-        size_t bytes = utf8_decode(name, &cp);
-        int width = utf8_width(cp);
-        if (columns + width > 20 || used + bytes >= sizeof(clipped)) break;
-        memcpy(clipped + used, name, bytes);
-        used += bytes;
-        columns += width;
-        name += bytes;
-    }
-    clipped[used] = '\0';
-    text_at(x, y, color, "%s", clipped);
+    cell_set(0, y, "+", INK_LINE, INK_BACK);
+    for (int x = 1; x < width - 1; ++x)
+        cell_set(x, y, "-", INK_LINE, INK_BACK);
+    cell_set(width - 1, y, "+", INK_LINE, INK_BACK);
 }
 
 static void border(const char *title, const char *subtitle)
 {
     blank();
     rule(0);
-    rule(HEIGHT - 1);
-    for (int y = 1; y < HEIGHT - 1; ++y) {
-        text_at(0, y, MUTED, "|");
-        text_at(WIDTH - 1, y, MUTED, "|");
+    rule(height - 1);
+    for (int y = 1; y < height - 1; ++y) {
+        cell_set(0, y, "|", INK_LINE, INK_BACK);
+        cell_set(width - 1, y, "|", INK_LINE, INK_BACK);
     }
-    text_at(3, 1, GOLD, "%s", title);
-    text_at(3, 2, MUTED, "%s", subtitle);
+    text_at(3, 1, INK_GOLD, "%s", title);
+    text_at(3, 2, INK_MUTED, "%s", subtitle);
     rule(3);
 }
 
 static void present(void)
 {
-    char frame[FRAME_BYTES];
+    static char frame[FRAME_BYTES];
     size_t used = 0;
-    int last_color = -1;
-    for (int y = 0; y < HEIGHT; ++y) {
-        for (int x = 0; x < WIDTH; ++x) {
-            Cell *cell = &canvas[y][x];
+    int last_fg = -1, last_bg = -1;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const Cell *cell = &canvas[y][x];
             if (cell->continuation) continue;
-            if (terminal_color() && cell->color != last_color) {
-                const char *code = color_code(cell->color);
-                size_t count = strlen(code);
-                memcpy(frame + used, code, count);
-                used += count;
-                last_color = cell->color;
+            if (terminal_color()) {
+                if (cell->foreground != last_fg) {
+                    int n = snprintf(frame + used, sizeof(frame) - used, "\033[38;2;%sm",
+                                     art_ink_rgb((Ink)cell->foreground));
+                    used += (size_t)n;
+                    last_fg = cell->foreground;
+                }
+                if (cell->background != last_bg) {
+                    int n = snprintf(frame + used, sizeof(frame) - used, "\033[48;2;%sm",
+                                     art_ink_rgb((Ink)cell->background));
+                    used += (size_t)n;
+                    last_bg = cell->background;
+                }
             }
             size_t count = strlen(cell->text);
             memcpy(frame + used, cell->text, count);
             used += count;
         }
-        if (y < HEIGHT - 1) {
-            frame[used++] = '\r';
-            frame[used++] = '\n';
-        }
+        if (y < height - 1) { frame[used++] = '\r'; frame[used++] = '\n'; }
     }
     frame[used] = '\0';
     terminal_present(frame);
 }
 
-static int ingredient_color(Ingredient item)
+static void meter(int x, int y, int columns, double ratio, Ink ink)
 {
-    switch (item) {
-    case ING_BOTTOM: case ING_TOP: return GOLD;
-    case ING_PATTY: return BROWN;
-    case ING_CHEESE: return YELLOW;
-    case ING_LETTUCE: case ING_PICKLE: return GREEN;
-    case ING_TOMATO: return RED;
-    default: return WHITE;
+    if (ratio < 0) ratio = 0;
+    if (ratio > 1) ratio = 1;
+    int filled = (int)ceil(ratio * columns);
+    for (int i = 0; i < columns; ++i)
+        text_at(x + i, y, i < filled ? ink : INK_LINE, "%s",
+                terminal_color() ? "━" : i < filled ? "=" : "-");
+}
+
+static const char *monochrome_pixel(Ink ink)
+{
+    switch (ink) {
+    case INK_PANEL: return " ";
+    case INK_MEAT: case INK_MEAT_LIGHT: case INK_GRILL: return "#";
+    case INK_LETTUCE: case INK_LETTUCE_LIGHT: return "~";
+    case INK_PICKLE: return "o";
+    case INK_TOMATO: case INK_TOMATO_LIGHT: return "O";
+    case INK_CHEESE: case INK_CHEESE_LIGHT: return "=";
+    case INK_SESAME: return "'";
+    case INK_PLATE: case INK_SHADOW: return "_";
+    default: return ":";
     }
 }
 
-static const char *ingredient_art(Ingredient item)
+static int draw_burger(int x, int y, int rows, const BurgerStack *burger, int lift)
 {
-    switch (item) {
-    case ING_BOTTOM: return "  \\__________________/  ";
-    case ING_PATTY: return " [####################] ";
-    case ING_CHEESE: return "  /VVVVVVVVVVVVVVVVVV\\  ";
-    case ING_LETTUCE: return " ~^~^~^~^~^~^~^~^~^~^~  ";
-    case ING_TOMATO: return "  (O)(O)(O)(O)(O)(O)    ";
-    case ING_PICKLE: return "   [o] [o] [o] [o]     ";
-    case ING_TOP: return "  / .  '  .  '  .  ' \\  ";
-    default: return "";
+    BurgerArt art;
+    art_burger(&art, burger, rows * 2, lift);
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < ART_WIDTH; ++col) {
+            Ink upper = (Ink)art.pixels[row * 2][col];
+            Ink lower = (Ink)art.pixels[row * 2 + 1][col];
+            if (terminal_color()) {
+                cell_set(x + col, y + row, "▀", upper, lower);
+            } else {
+                Ink sample = upper != INK_PANEL ? upper : lower;
+                cell_set(x + col, y + row, monochrome_pixel(sample), INK_TEXT, INK_PANEL);
+            }
+        }
     }
+    return y + art.top_row / 2;
+}
+
+static BurgerStack house_burger(void)
+{
+    BurgerStack burger = {.items = {ING_BOTTOM, ING_PATTY, ING_CHEESE, ING_LETTUCE,
+                                   ING_TOMATO, ING_PICKLE, ING_TOP}, .top = 7};
+    return burger;
 }
 
 void ui_menu(int selected, int duration)
 {
-    border("BURGER STACK  /  햄버거 만들기", "자료구조로 만드는 작은 햄버거 가게");
-    text_at(8, 6, GOLD, "H A M B U R G E R");
-    text_at(8, 8, WHITE, "주문대로 쌓고, 맛있게 서빙!");
-    text_at(8, 10, MUTED, "%d초 영업  /  목숨 3개  /  최고 단계 8", duration);
+    border("BURGER STACK  /  햄버거 만들기", "한 층씩 쌓아 올리는 나만의 작은 버거 가게");
+    int art_x = roomy ? 56 : 45;
+    int art_y = roomy ? 7 : 6;
+    fill(art_x - 2, 5, 34, roomy ? 20 : 14, INK_PANEL);
+    text_at(6, 6, INK_GOLD, "H A M B U R G E R");
+    text_at(6, 8, INK_TEXT, "갓 구운 빵, 맛있는 한 판.");
+    text_at(6, 9, INK_MUTED, "주문을 보고, 쌓고, 서빙하세요.");
+    text_at(6, 11, INK_CYAN, "%d초 영업 / 목숨 3개", duration);
     const char *items[] = {"1  게임 시작", "2  TOP 10 랭킹", "3  게임 방법", "4  종료"};
-    for (int i = 0; i < 4; ++i)
-        text_at(8, 13 + i, selected == i ? GOLD : WHITE,
+    int menu_y = roomy ? 14 : 13;
+    for (int i = 0; i < 4; ++i) {
+        if (selected == i) fill(5, menu_y + i, 31, 1, INK_PANEL);
+        text_at(6, menu_y + i, selected == i ? INK_GOLD : INK_MUTED,
                 "%s  %s", selected == i ? ">" : " ", items[i]);
-    Ingredient illustration[] = {ING_TOP, ING_TOMATO, ING_LETTUCE, ING_CHEESE, ING_PATTY, ING_BOTTOM};
-    for (int i = 0; i < 6; ++i)
-        text_at(49, 8 + i, ingredient_color(illustration[i]), "%s", ingredient_art(illustration[i]));
-    text_at(51, 15, MUTED, "====================");
-    rule(20);
-    text_at(3, 21, CYAN, "[1~4] 선택    [위/아래] 이동    [Enter] 확인    [Q] 종료");
-    text_at(3, 22, MUTED, "STACK: push / pop    QUEUE: first in, first out    C11");
+    }
+    BurgerStack burger = house_burger();
+    draw_burger(art_x, art_y, roomy ? 17 : 12, &burger, 0);
+    if (roomy) {
+        text_at(58, 24, INK_GOLD, "THE HOUSE SPECIAL");
+        text_at(6, 21, INK_MUTED, "첫 주문은 치즈버거로 시작해요.");
+        text_at(6, 22, INK_MUTED, "[1] [2] [3] [7] 그리고 [S]!");
+    }
+    rule(height - 4);
+    text_at(3, height - 3, INK_TEXT, "[1~4] 선택    [위/아래] 이동    [Enter] 확인    [Q] 종료");
+    text_at(3, height - 2, INK_MUTED, "96 x 32 이상이면 넓은 화면 / 최소 80 x 24 / C11");
     present();
 }
 
 void ui_help(void)
 {
-    border("HOW TO PLAY  /  게임 방법", "주문서의 숫자를 위에서 아래로 읽으며, 햄버거는 아래부터 쌓아요.");
-    text_at(3, 5, GOLD, "[1] 아래 빵  [2] 패티  [3] 치즈  [4] 양상추");
-    text_at(3, 6, GOLD, "[5] 토마토   [6] 피클  [7] 위 빵");
-    text_at(3, 8, WHITE, "[U] 맨 위 재료 되돌리기 (pop)    [S / Space] 제출");
-    text_at(3, 9, WHITE, "[Q / Esc] 영업 마감 후 점수 저장 화면으로");
-    text_at(3, 11, CYAN, "1. 맨 앞 손님의 주문서에 표시된 순서대로 숫자키를 누르세요.");
-    text_at(3, 12, CYAN, "2. 순서와 개수가 모두 맞으면 성공! 빠른 서빙과 콤보는 추가 점수.");
-    text_at(3, 13, CYAN, "3. 잘못 제출하거나 손님의 인내심이 바닥나면 목숨이 1개 줄어요.");
-    text_at(3, 15, WHITE, "3명 성공할 때마다 단계 상승: 주문은 길어지고 손님은 급해집니다.");
-    text_at(3, 16, WHITE, "대기 중인 손님도 시간이 흐릅니다. 표정과 남은 초를 확인하세요.");
-    text_at(3, 17, WHITE, "시간이 끝나거나 목숨이 0이면 종료. 이름을 넣어 TOP 10에 도전!");
-    text_at(3, 19, MUTED, "예시: 아래 빵 > 패티 > 치즈 > 위 빵  =  [1] [2] [3] [7] [S]");
-    rule(20);
-    text_at(3, 21, GOLD, "[Enter / Esc / Q] 메뉴로 돌아가기");
-    text_at(3, 22, MUTED, "재료와 제출은 Enter 없이 즉시 반영됩니다. 권장 화면: 80 x 24 이상");
+    border("HOW TO PLAY  /  게임 방법", "주문서의 위에서 아래 순서대로, 햄버거는 바닥부터 쌓아요.");
+    text_at(3, 5, INK_GOLD, "[1] 아래 빵  [2] 패티  [3] 치즈  [4] 양상추");
+    text_at(3, 6, INK_GOLD, "[5] 토마토   [6] 피클  [7] 위 빵");
+    text_at(3, 8, INK_TEXT, "[U / Backspace] 맨 위 재료 빼기    [S / Space] 제출");
+    text_at(3, 9, INK_TEXT, "[P] 잠깐 쉬기    [Q / Esc] 영업 마감 후 점수 저장");
+    text_at(3, 11, INK_CYAN, "1. 주문서의 > 표시가 다음에 올릴 재료예요.");
+    text_at(3, 12, INK_CYAN, "2. + 는 맞는 재료, ! 는 다른 재료. 틀렸다면 U로 되돌리세요.");
+    text_at(3, 13, INK_CYAN, "3. 모두 맞으면 S! 빠른 서빙과 연속 성공은 추가 점수를 줘요.");
+    text_at(3, 15, INK_TEXT, "잘못 제출하거나 손님이 떠나면 목숨 -1. 대기 손님도 시간이 흘러요.");
+    text_at(3, 16, INK_TEXT, "3명 성공할 때마다 단계 상승. 주문과 손님 수가 점점 늘어납니다.");
+    text_at(3, 18, INK_GOLD, "첫 주문 연습: [1] 아래 빵 > [2] 패티 > [3] 치즈 > [7] 위 빵 > [S]");
+    if (roomy) {
+        text_at(3, 21, INK_MUTED, "손님 표정과 시간 막대를 함께 확인하세요.");
+        text_at(3, 22, INK_MUTED, "잠깐 쉬거나 창 크기를 조절할 때는 모든 타이머가 멈춥니다.");
+        text_at(3, 23, INK_MUTED, "종료 후 이름을 넣으면 이 컴퓨터의 랭킹에 저장할 수 있어요.");
+    }
+    rule(height - 4);
+    text_at(3, height - 3, INK_GOLD, "[Enter / Esc / Q] 메뉴로 돌아가기");
+    text_at(3, height - 2, INK_MUTED, "재료와 제출은 Enter 없이 즉시 반영됩니다.");
     present();
+}
+
+static size_t recipe_prefix(const Game *game, const Customer *order)
+{
+    size_t matched = 0;
+    if (order != NULL)
+        while (matched < game->burger.top && matched < order->length
+               && game->burger.items[matched] == order->recipe[matched]) ++matched;
+    return matched;
+}
+
+static void game_feedback(const Game *game, double now, const Customer *order, size_t matched)
+{
+    int y = height - 5;
+    if (now < game->feedback_until) {
+        if (game->feedback == EVENT_CORRECT) {
+            fill(2, y, width - 4, 1, INK_PANEL);
+            text_at(3, y, INK_GREEN, "서빙 성공! +%d점 / %d연속 성공%s", game->last_points,
+                    game->combo, game->served % 3 == 0 && game->served <= 21
+                                 ? " / STAGE UP!" : " / 맛있게 드세요!");
+        } else if (game->feedback == EVENT_WRONG) {
+            text_at(3, y, INK_RED, "주문과 달라요! 목숨 -1. 다음 주문부터 다시 시작해요.");
+        } else if (game->feedback == EVENT_TIMEOUT) {
+            text_at(3, y, INK_RED, "기다리던 손님이 떠났어요! 목숨 -1. 남은 손님을 확인하세요.");
+        }
+        return;
+    }
+    if (now < game->event_until && game->event == EVENT_FULL) {
+        text_at(3, y, INK_RED, "접시가 가득 찼어요. U로 맨 위 재료를 빼 주세요.");
+    } else if (game->burger.top > matched) {
+        text_at(3, y, INK_RED, "순서를 확인하세요! [U] %zu번으로 틀린 재료부터 되돌릴 수 있어요.",
+                game->burger.top - matched);
+    } else if (order != NULL && matched == order->length) {
+        text_at(3, y, INK_GREEN, "완벽하게 쌓았어요! [S / Space]로 손님에게 서빙하세요.");
+    } else if (order != NULL) {
+        text_at(3, y, INK_TEXT, "다음 재료: [%d] %s  /  잘못 넣었으면 [U]로 되돌리세요.",
+                order->recipe[matched], ingredient_name(order->recipe[matched]));
+    }
 }
 
 void ui_game(const Game *game, double now)
 {
     border("BURGER STACK", "");
-    text_at(21, 1, WHITE, "SCORE %5d", game->score);
-    text_at(39, 1, game_time_left(game, now) <= 15 ? RED : CYAN,
+    text_at(24, 1, INK_TEXT, "SCORE %6d", game->score);
+    text_at(45, 1, game_time_left(game, now) <= 15 ? INK_RED : INK_CYAN,
             "TIME %3.0fs", ceil(game_time_left(game, now)));
-    text_at(56, 1, GOLD, "STAGE %d", game->stage);
-    text_at(3, 2, game->lives == 1 ? RED : GREEN,
-            "LIFE %s %s %s", game->lives >= 1 ? "<3" : "--",
-            game->lives >= 2 ? "<3" : "--", game->lives >= 3 ? "<3" : "--");
-    text_at(29, 2, MUTED, "SERVED %d     COMBO x%d     NEXT %d/3", game->served,
-            game->combo, game->served % 3);
-    text_at(3, 4, CYAN, "ORDER QUEUE / 손님 %zu", game->queue.count);
-    text_at(45, 4, GOLD, "MY BURGER / 재료 %zu개", game->burger.top);
-    for (int y = 4; y < 19; ++y) text_at(41, y, MUTED, "|");
+    text_at(64, 1, INK_GOLD, "STAGE %d", game->stage);
+    text_at(3, 2, game->lives == 1 ? INK_RED : INK_GREEN, "LIFE %s %s %s",
+            game->lives >= 1 ? "<3" : "--", game->lives >= 2 ? "<3" : "--",
+            game->lives >= 3 ? "<3" : "--");
+    text_at(25, 2, INK_MUTED, "SERVED %d   COMBO x%d", game->served, game->combo);
+    if (game->stage == 8) text_at(57, 2, INK_GOLD, "MAX STAGE");
+    else text_at(57, 2, INK_MUTED, "NEXT %d/3", game->served % 3);
+    int right = roomy ? 48 : 42;
+    int bottom = height - (roomy ? 8 : 7);
+    fill(2, 5, right - 5, bottom - 4, INK_PANEL);
+    fill(right, 5, width - right - 2, bottom - 4, INK_PANEL);
+    text_at(3, 4, INK_CYAN, "ORDER QUEUE / 손님 %zu", game->queue.count);
+    text_at(right + 2, 4, INK_GOLD, "MY BURGER / %zu LAYERS", game->burger.top);
     for (size_t i = 0; i < game->queue.count; ++i) {
         const Customer *customer = queue_at(&game->queue, i);
         double remaining = customer->deadline - now;
         double ratio = remaining / (customer->deadline - customer->arrived_at);
-        const char *face = ratio > 0.5 ? "(^_^)" : ratio > 0.25 ? "(-_-)" : "(>_<)";
-        int color = ratio > 0.5 ? GREEN : ratio > 0.25 ? YELLOW : RED;
-        int x = 3 + (int)i * 7;
-        text_at(x, 5, color, "%s", face);
-        text_at(x, 6, MUTED, "#%03u", customer->id);
+        Ink color = ratio > 0.5 ? INK_GREEN : ratio > 0.25 ? INK_GOLD : INK_RED;
+        int x = 3 + (int)i * (roomy ? 8 : 7);
+        text_at(x, 5, color, "%s", ratio > 0.5 ? "(^_^)" : ratio > 0.25 ? "(-_-)" : "(>_<)");
+        text_at(x, 6, INK_MUTED, "#%03u", customer->id);
         text_at(x, 7, color, "%3.0fs", ceil(remaining > 0 ? remaining : 0));
+        if (roomy) meter(x, 8, 5, ratio, color);
     }
-    const Customer *customer = queue_at(&game->queue, 0);
-    if (customer != NULL) {
-        text_at(3, 8, CYAN, "주문 #%03u / 아래부터 순서대로", customer->id);
-        for (size_t i = 0; i < customer->length; ++i) {
+    const Customer *order = queue_at(&game->queue, 0);
+    size_t matched = recipe_prefix(game, order);
+    int receipt_y = roomy ? 10 : 8;
+    if (order != NULL) {
+        text_at(3, receipt_y, INK_CYAN, "주문 #%03u / %zu개 중 %zu개 완료", order->id, order->length, matched);
+        int first_row = receipt_y + (roomy ? 2 : 1);
+        for (size_t i = 0; i < order->length; ++i) {
             bool placed = i < game->burger.top;
-            bool match = placed && game->burger.items[i] == customer->recipe[i];
-            int color = placed ? (match ? GREEN : RED) : WHITE;
-            text_at(3, 9 + (int)i, color, "%s %2zu. [%d] %s",
-                    placed ? (match ? "+" : "!") : " ", i + 1,
-                    customer->recipe[i], ingredient_name(customer->recipe[i]));
+            bool match = placed && game->burger.items[i] == order->recipe[i];
+            bool next = i == matched && game->burger.top == matched;
+            Ink color = placed ? (match ? INK_GREEN : INK_RED) : next ? INK_GOLD : INK_MUTED;
+            if (next) fill(3, first_row + (int)i, right - 8, 1, INK_SHADOW);
+            text_at(4, first_row + (int)i, color, "%s %2zu. [%d] %s",
+                    placed ? (match ? "+" : "!") : next ? ">" : " ", i + 1,
+                    order->recipe[i], ingredient_name(order->recipe[i]));
+        }
+        if (roomy) {
+            meter(4, 22, 33, (double)matched / order->length, INK_GOLD);
+            text_at(4, 24, INK_MUTED, "아래 빵부터 순서대로 쌓아 주세요.");
         }
     }
-    if (game->burger.top == 0) {
-        text_at(47, 10, MUTED, "아직 비어 있는 접시");
-        text_at(46, 12, WHITE, "[1] 아래 빵부터 시작!");
+    bool serving = game->submitted_correct && game->submitted.top > 0
+                && game->burger.top == 0 && now - game->submitted_at < 0.85;
+    const BurgerStack *shown = serving ? &game->submitted : &game->burger;
+    int art_x = right + (width - right - 2 - ART_WIDTH) / 2;
+    int art_y = 6, art_rows = bottom - art_y + 1;
+    int lift = !serving && now - game->last_layer_at < 0.12 ? 2 : 0;
+    int top_row = draw_burger(art_x, art_y, art_rows, shown, lift);
+    if (shown->top == 0) {
+        text_at(art_x + 3, roomy ? 12 : 9, INK_MUTED, "비어 있는 따뜻한 접시");
+        text_at(art_x + 3, roomy ? 14 : 11, INK_GOLD, "[1] 아래 빵부터 시작!");
     } else {
-        for (size_t i = 0; i < game->burger.top; ++i) {
-            Ingredient item = game->burger.items[i];
-            int y = 17 - (int)i;
-            text_at(44, y, ingredient_color(item), "%s", ingredient_art(item));
-            if (i + 1 == game->burger.top) text_at(70, y, CYAN, "< TOP");
-        }
+        text_at(width - 6, top_row, INK_CYAN, "TOP");
+        if (serving) {
+            text_at(art_x + 5, 5, INK_GREEN, "*  ORDER UP!  *");
+            if (top_row > 8) {
+                text_at(art_x + 3, top_row - 2, INK_GOLD, "+");
+                text_at(art_x + 24, top_row - 3, INK_GOLD, "*");
+            }
+        } else if (roomy) text_at(art_x + 5, 5, INK_MUTED, "FRESH OFF THE GRILL");
     }
-    text_at(45, 18, MUTED, "============================");
-    const char *message = "주문서를 보고 숫자키로 재료를 쌓으세요.";
-    int message_color = WHITE;
-    if (now < game->event_until) {
-        switch (game->event) {
-        case EVENT_CORRECT:
-            text_at(3, 19, GREEN, "서빙 성공! +%d점  /  %d연속 성공", game->last_points, game->combo);
-            message = NULL; break;
-        case EVENT_WRONG: message = "주문과 달라요! 목숨 -1. 다음 손님의 주문을 확인하세요."; message_color = RED; break;
-        case EVENT_TIMEOUT: message = "기다리던 손님이 떠났어요! 목숨 -1."; message_color = RED; break;
-        case EVENT_EMPTY: message = "아직 재료가 없어요. 숫자키로 재료를 올리세요."; break;
-        case EVENT_FULL: message = "더 쌓을 수 없어요! U로 되돌리거나 S로 제출하세요."; message_color = RED; break;
-        case EVENT_UNDONE: message = "맨 위 재료를 하나 뺐어요. (stack pop)"; break;
-        default: break;
-        }
+    if (roomy) {
+        Ingredient top = game->burger.top > 0 ? game->burger.items[game->burger.top - 1] : 0;
+        if (top) text_at(right + 3, 25, art_ingredient_ink(top), "맨 위: %s  [U] 되돌리기", ingredient_name(top));
+        else text_at(right + 3, 25, INK_MUTED, "주문대로 한 층씩 올려 보세요.");
     }
-    if (message != NULL) text_at(3, 19, message_color, "%s", message);
-    rule(20);
-    text_at(2, 21, GOLD, "[1]아래빵 [2]패티 [3]치즈 [4]양상추 [5]토마토 [6]피클 [7]위빵");
-    text_at(2, 22, CYAN, "[U]되돌리기(pop)  [S/Space]제출  [Q/Esc]마감   |   Enter 없이 입력");
+    game_feedback(game, now, order, matched);
+    rule(height - 4);
+    int key_x = 2;
+    const char *names[] = {"아래빵", "패티", "치즈", "양상추", "토마토", "피클", "위빵"};
+    const int label_width[] = {10, 8, 8, 10, 10, 8, 8};
+    for (int i = 0; i < 7; ++i) {
+        text_at(key_x, height - 3, art_ingredient_ink((Ingredient)(i + 1)), "[%d]%s", i + 1, names[i]);
+        key_x += label_width[i] + (roomy ? 2 : 0);
+    }
+    text_at(2, height - 2, INK_TEXT, "[U]되돌리기  [S/Space]서빙  [P]잠깐 쉬기  [Q/Esc]마감");
+    present();
+}
+
+void ui_pause(const Game *game)
+{
+    border("TAKE A BREAK  /  잠깐 쉬는 중", "게임 시간과 모든 손님의 기다리는 시간이 멈췄습니다.");
+    fill(4, 5, width - 8, height - 10, INK_PANEL);
+    text_at(8, 7, INK_GOLD, "PAUSED");
+    text_at(8, 9, INK_TEXT, "다시 준비되면 이어서 만들어 봐요.");
+    text_at(8, 11, INK_CYAN, "현재 점수 %d / 서빙 %d명", game->score, game->served);
+    text_at(8, 14, INK_TEXT, "[P / Enter / Esc] 계속하기");
+    text_at(8, 16, INK_MUTED, "[Q] 영업 마감 후 점수 저장");
+    rule(height - 4);
+    text_at(3, height - 3, INK_GOLD, "쌓아 둔 재료와 주문서는 그대로 보관됩니다.");
     present();
 }
 
@@ -273,45 +394,53 @@ void ui_results(const Game *game, const char *name, bool save_failed)
     border("SHIFT COMPLETE  /  영업 종료", "오늘도 수고했어요, 셰프!");
     const char *reason = game->ended == END_TIME ? "영업시간이 끝났습니다."
                        : game->ended == END_LIVES ? "목숨을 모두 사용했습니다." : "영업을 마감했습니다.";
-    text_at(8, 5, MUTED, "%s", reason);
-    text_at(8, 7, GOLD, "FINAL SCORE     %d", game->score);
-    text_at(8, 9, WHITE, "서빙 성공       %d명", game->served);
-    text_at(8, 10, WHITE, "실패 / 떠난 손님 %d명", game->missed);
-    text_at(8, 11, CYAN, "최고 콤보       %d연속", game->best_combo);
-    text_at(8, 12, CYAN, "도달 단계       %d", game->stage);
-    text_at(8, 15, WHITE, "랭킹에 남길 이름 (최대 20칸, 한글 10자)");
-    text_at(8, 17, GOLD, "> %s_", name);
+    text_at(6, 5, INK_MUTED, "%s", reason);
+    text_at(6, 7, INK_GOLD, "FINAL SCORE  %d", game->score);
+    text_at(6, 9, INK_TEXT, "서빙 성공      %d명", game->served);
+    text_at(6, 10, INK_TEXT, "실패 / 떠난 손님 %d명", game->missed);
+    text_at(6, 11, INK_CYAN, "최고 콤보      %d연속", game->best_combo);
+    text_at(6, 12, INK_CYAN, "도달 단계      %d", game->stage);
+    text_at(46, 7, INK_GOLD, "%s", game->served >= 21 ? "MASTER CHEF" : game->served >= 9 ? "GREAT SHIFT" : "NICE COOKING");
+    text_at(46, 9, INK_MUTED, "다음 영업에 다시 만나요!");
+    if (roomy) {
+        BurgerStack burger = house_burger();
+        fill(55, 11, 32, 13, INK_PANEL);
+        draw_burger(56, 11, 13, &burger, 0);
+    }
+    int input_y = roomy ? 20 : 15;
+    text_at(6, input_y, INK_TEXT, "랭킹에 남길 이름 (한글 10자)");
+    fill(6, input_y + 2, 30, 1, INK_PANEL);
+    text_at(7, input_y + 2, INK_GOLD, "> %s_", name);
     if (save_failed)
-        text_at(3, 19, RED, "저장 실패: 경로와 쓰기 권한을 확인하세요. Enter로 다시 시도.");
-    else
-        text_at(8, 19, MUTED, "이름을 비워두면 '셰프'로 저장합니다.");
-    rule(20);
-    text_at(3, 21, CYAN, "[Enter] 점수 저장    [Backspace] 이름 수정    [Esc] 저장하지 않고 메뉴");
-    text_at(3, 22, MUTED, "결과는 이 컴퓨터의 ranking.txt에 보관됩니다.");
+        text_at(3, height - 5, INK_RED, "저장 실패: 경로와 쓰기 권한을 확인하세요. Enter로 다시 시도.");
+    else text_at(6, height - 5, INK_MUTED, "이름을 비워두면 '셰프'로 저장합니다.");
+    rule(height - 4);
+    text_at(3, height - 3, INK_TEXT, "[Enter] 저장  [Backspace] 이름 수정  [Esc] 저장하지 않고 메뉴");
+    text_at(3, height - 2, INK_MUTED, "이 컴퓨터의 랭킹에 저장됩니다.");
     present();
 }
 
 void ui_ranking(const Ranking *ranking, bool loaded, bool saved)
 {
     border("HALL OF FAME  /  TOP 10", saved ? "점수를 저장했습니다! 다음 영업에서도 만나요." : "우리 가게 최고의 셰프들");
-    text_at(8, 5, MUTED, "RANK       NAME                           SCORE");
-    if (!loaded) {
-        text_at(8, 8, RED, "랭킹 파일을 읽을 수 없습니다. 경로와 권한을 확인하세요.");
-    } else if (ranking->count == 0) {
-        text_at(8, 9, GOLD, "아직 기록이 없어요. 첫 번째 셰프가 되어 보세요!");
-    } else {
+    text_at(8, 5, INK_MUTED, "RANK       NAME                           SCORE");
+    if (!loaded) text_at(8, 8, INK_RED, "랭킹 파일을 읽을 수 없습니다. 경로와 권한을 확인하세요.");
+    else if (ranking->count == 0) text_at(8, 9, INK_GOLD, "아직 기록이 없어요. 첫 번째 셰프가 되어 보세요!");
+    else {
         for (size_t i = 0; i < ranking->count && i < RANKING_TOP_COUNT; ++i) {
-            int color = i == 0 ? GOLD : i < 3 ? CYAN : WHITE;
-            text_at(8, 7 + (int)i, color, "%2zu", i + 1);
-            ranking_name_at(19, 7 + (int)i, color, ranking->entries[i].name);
-            text_at(50, 7 + (int)i, color, "%10d", ranking->entries[i].score);
+            Ink ink = i == 0 ? INK_GOLD : i < 3 ? INK_CYAN : INK_TEXT;
+            int row = 7 + (int)i;
+            if (i % 2 == 0) fill(6, row, width - 12, 1, INK_PANEL);
+            text_at(8, row, ink, "%2zu", i + 1);
+            text_limit(19, row, ink, 20, ranking->entries[i].name);
+            text_at(50, row, ink, "%10d", ranking->entries[i].score);
         }
     }
     if (loaded && ranking->skipped > 0)
-        text_at(8, 18, MUTED, "읽을 수 없는 기록 %zu개는 건너뛰었습니다.", ranking->skipped);
-    rule(20);
-    text_at(3, 21, GOLD, "[Enter / Esc / Q] 메뉴로 돌아가기");
-    text_at(3, 22, MUTED, "점수 내림차순 / 동점은 먼저 저장한 기록 순서 / 기록은 컴퓨터별 저장");
+        text_at(8, height - 6, INK_MUTED, "읽을 수 없는 기록 %zu개는 건너뛰었습니다.", ranking->skipped);
+    rule(height - 4);
+    text_at(3, height - 3, INK_GOLD, "[Enter / Esc / Q] 메뉴로 돌아가기");
+    text_at(3, height - 2, INK_MUTED, "점수 내림차순 / 동점은 먼저 저장한 순서 / 컴퓨터별 저장");
     present();
 }
 
@@ -319,7 +448,7 @@ bool ui_terminal_fits(void)
 {
     int columns, rows;
     terminal_size(&columns, &rows);
-    return columns >= WIDTH && rows >= HEIGHT;
+    return columns >= 80 && rows >= 24;
 }
 
 void ui_small_terminal(int columns, int rows)
@@ -327,6 +456,6 @@ void ui_small_terminal(int columns, int rows)
     char message[256];
     snprintf(message, sizeof(message),
              "\033[2J창을 80 x 24 이상으로 늘려주세요.\r\n현재: %d x %d\r\n"
-             "크기 조절 중에는 시간이 멈춥니다.\r\n[Q / Esc] 종료", columns, rows);
+             "크기 조절 중에는 시간이 멈춥니다.\r\n[Q / Esc] 돌아가기", columns, rows);
     terminal_present(message);
 }
