@@ -55,7 +55,7 @@ static int parse_options(int argc, char **argv, Options *options)
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             usage(argv[0]); return 1;
         }
-        if (strcmp(arg, "--version") == 0) { puts("BURGER STACK 1.1.0"); return 1; }
+        if (strcmp(arg, "--version") == 0) { puts("BURGER STACK 1.1.1"); return 1; }
         if (strcmp(arg, "--no-color") == 0) { options->color = false; continue; }
         if (strcmp(arg, "--demo") == 0) { options->demo = true; continue; }
         if ((strcmp(arg, "--duration") == 0 || strcmp(arg, "--seed") == 0
