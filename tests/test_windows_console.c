@@ -1,5 +1,6 @@
 /* Native Windows console integration test. Run on Windows 10 1809 or later. */
 #define _WIN32_WINNT 0x0A00
+#define NTDDI_VERSION 0x0A000006 /* Windows 10 1809: ConPTY declarations. */
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
